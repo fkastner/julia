@@ -2,22 +2,6 @@
 
 abstract type MethodTableView; end
 
-struct MethodLookupResult
-    # Really Vector{Core.MethodMatch}, but it's easier to represent this as
-    # and work with Vector{Any} on the C side.
-    matches::Vector{Any}
-    valid_worlds::WorldRange
-    ambig::Bool
-end
-length(result::MethodLookupResult) = length(result.matches)
-function iterate(result::MethodLookupResult, args...)
-    r = iterate(result.matches, args...)
-    r === nothing && return nothing
-    match, state = r
-    return (match::MethodMatch, state)
-end
-getindex(result::MethodLookupResult, idx::Int) = getindex(result.matches, idx)::MethodMatch
-
 """
     struct InternalMethodTable <: MethodTableView
 
@@ -46,12 +30,11 @@ Overlays another method table view with an additional local fast path cache that
 can respond to repeated, identical queries faster than the original method table.
 """
 struct CachedMethodTable{T} <: MethodTableView
-    cache::IdDict{Any, Union{Missing, MethodLookupResult}}
+    cache::MethodLookupCache
     table::T
+    CachedMethodTable(cache::MethodLookupCache, table::T) where T = new{T}(cache, table)
+    CachedMethodTable(::Nothing, table::T) where T = new{T}(MethodLookupCache(), table)
 end
-CachedMethodTable(table::T) where T =
-    CachedMethodTable{T}(IdDict{Any, Union{Missing, MethodLookupResult}}(),
-        table)
 
 """
     findall(sig::Type, view::MethodTableView; limit=typemax(Int))
@@ -92,9 +75,13 @@ function findall(@nospecialize(sig::Type), table::OverlayMethodTable; limit::Int
 end
 
 function findall(@nospecialize(sig::Type), table::CachedMethodTable; limit::Int=typemax(Int))
+    if isconcretetype(sig)
+        # we have equivalent cache in this concrete DataType's hash table, so don't bother to cache it here
+        return findall(sig, table.table; limit)
+    end
     box = Core.Box(sig)
     return get!(table.cache, sig) do
-        findall(box.contents, table.table; limit=limit)
+        findall(box.contents, table.table; limit)
     end
 end
 

@@ -141,7 +141,7 @@ mutable struct InferenceState
             cache === :global, false, false,
             Effects(consistent, ALWAYS_TRUE, ALWAYS_TRUE, ALWAYS_TRUE,
                    inbounds_taints_consistency),
-            CachedMethodTable(method_table(interp)),
+            CachedMethodTable(get_method_lookup_cache(interp), method_table(interp)),
             interp)
         result.result = frame
         cache !== :no && push!(get_inference_cache(interp), result)
