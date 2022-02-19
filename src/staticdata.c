@@ -2361,7 +2361,9 @@ JL_DLLEXPORT jl_value_t *jl_restore_system_image_data(const char *buf, size_t le
 
 JL_DLLEXPORT jl_value_t *jl_restore_package_image_from_file(const char *fname)
 {
-    void *pkgimg_handle = dlopen(fname, RTLD_NOW);
+    void *pkgimg_handle = dlopen(fname, RTLD_LAZY);
+    if (!pkgimg_handle)
+        jl_errorf("Error opening package file %s: %s\n", fname, dlerror());
     const char *pkgimg_data;
     jl_dlsym(pkgimg_handle, "jl_package_image_data", (void **)&pkgimg_data, 1);
     size_t *plen;
