@@ -565,11 +565,11 @@ void jl_dump_native_impl(void *native_code,
             ArrayRef<uint8_t>((const unsigned char*)sysimg_data, sysimg_len));
         addComdat(new GlobalVariable(*sysimage, data->getType(), false,
                                      GlobalVariable::ExternalLinkage,
-                                     data, jl_precompile_toplevel_module ? "jl_package_image_data" : "jl_system_image_data"))->setAlignment(Align(64));
+                                     data, "jl_system_image_data"))->setAlignment(Align(64));
         Constant *len = ConstantInt::get(T_size, sysimg_len);
         addComdat(new GlobalVariable(*sysimage, len->getType(), true,
                                      GlobalVariable::ExternalLinkage,
-                                     len, jl_precompile_toplevel_module ? "jl_package_image_size" : "jl_system_image_size"));
+                                     len, "jl_system_image_size"));
     }
     add_output(*sysimage, "data.bc", "data.bc", "data.o", "data.s");
 
