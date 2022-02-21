@@ -700,10 +700,9 @@ static void write_pointer(ios_t *s) JL_NOTSAFEPOINT
 
 // Compared to internal references, external links require one additional piece of information
 // for succesful relocation, the sysimg/pkgimg that is being linked against. This is stored in `link_ids`.
-static uintptr_t encode_external_link(jl_value_t *v)
+static void encode_external_link(jl_serializer_state *s, jl_value_t *v)
 {
     size_t i;
-    uint64_t *link_id_data  = (uint64_t*)jl_array_data(link_ids);
     uint64_t *build_id_data = (uint64_t*)jl_array_data(jl_build_ids);
     // jl_printf(JL_STDOUT, "External pointer %p\n", v);
     // jl_(v);
@@ -714,12 +713,18 @@ static uintptr_t encode_external_link(jl_value_t *v)
             // jl_printf(JL_STDOUT, "Found it at i = %ld\n", i);
             // We found the sysimg/pkg that this item links against
             jl_array_grow_end(link_ids, 1);
+            uint64_t *link_id_data  = (uint64_t*)jl_array_data(link_ids);
             link_id_data[jl_array_len(link_ids)-1] = build_id_data[i>>1];
             size_t offset = (uintptr_t)v - left;
             offset /= sizeof(void*);
-            // jl_printf(JL_STDOUT, "offset %lx\n", offset);
+            // jl_printf(JL_STDOUT, "is link %ld, has offset 0x%lx within build_id %ld\n", jl_array_len(link_ids), offset, build_id_data[i>>1]);
             assert(offset < ((uintptr_t)1 << RELOC_TAG_OFFSET) && "offset to external image too large");
-            return ((uintptr_t)ExternalLinkage << RELOC_TAG_OFFSET) + offset;
+            arraylist_push(&s->relocs_list, (void*)(uintptr_t)ios_pos(s->s));
+            arraylist_push(&s->relocs_list, (void*)0);  // would be nice to store build_id, but won't work on 32-bit
+            uintptr_t *slot = (uintptr_t*)&s->s->buf[ios_pos(s->s)];
+            write_pointer(s->s);
+            *slot = ((uintptr_t)ExternalLinkage << RELOC_TAG_OFFSET) + offset;
+            return;
         }
     }
     jl_error("object missed during jl_serialize_value pass and no external linkage identified");
@@ -791,6 +796,7 @@ static void write_pointerfield(jl_serializer_state *s, jl_value_t *fld) JL_NOTSA
 // in `gctags_list`.
 static void write_gctaggedfield(jl_serializer_state *s, uintptr_t ref) JL_NOTSAFEPOINT
 {
+    // jl_printf(JL_STDOUT, "gctaggedfield: position %p, value 0x%lx\n", (void*)(uintptr_t)ios_pos(s->s), ref);
     arraylist_push(&s->gctags_list, (void*)(uintptr_t)ios_pos(s->s));
     arraylist_push(&s->gctags_list, (void*)ref);
     write_pointer(s->s);
@@ -800,6 +806,7 @@ static void write_gctaggedfield(jl_serializer_state *s, uintptr_t ref) JL_NOTSAF
 static void jl_write_module(jl_serializer_state *s, uintptr_t item, jl_module_t *m)
 {
     size_t reloc_offset = ios_pos(s->s);
+    // jl_printf(JL_STDOUT, "Writing module %s at offset 0x%lx\n", jl_symbol_name(m->name), reloc_offset);
     size_t tot = sizeof(jl_module_t);
     ios_write(s->s, (char*)m, tot);     // raw memory dump of the `jl_module_t` structure
 
@@ -940,14 +947,14 @@ static void jl_write_values(jl_serializer_state *s)
     }
     assert(backref_table_numel * 2 == objects_list.len);
     qsort(objects_list.items, backref_table_numel, sizeof(void*) * 2, sysimg_sort_order);
-    if (serializer_worklist)
-        for (i = 0; i < objects_list.len; i+= 2) {
-            size_t id = (uintptr_t)objects_list.items[i+1];
-            jl_value_t *v = objects_list.items[i];
-            char *linkcode = externally_linked(v) ? "*" : "";
-            jl_printf(JL_STDOUT, "%ld%s: ", id, linkcode);
-            jl_(v);
-        }
+    // if (serializer_worklist)
+    //     for (i = 0; i < objects_list.len; i+= 2) {
+    //         size_t id = (uintptr_t)objects_list.items[i+1];
+    //         jl_value_t *v = objects_list.items[i];
+    //         char *linkcode = externally_linked(v) ? "*" : "";
+    //         jl_printf(JL_STDOUT, "%ld%s: ", id, linkcode);
+    //         jl_(v);
+    //     }
 
     // Serialize all entries
     for (i = 0, len = backref_table_numel * 2; i < len; i += 2) {
@@ -962,14 +969,14 @@ static void jl_write_values(jl_serializer_state *s)
         // write header
         write_gctaggedfield(s, backref_id(s, t));
         size_t reloc_offset = ios_pos(s->s);
+        // if (reloc_offset >= 0x48 && reloc_offset <= 0x58)
+        //     jl_printf(JL_STDOUT, "At position 0x%lx, the type-tagged backref_id was 0x%lx\n", reloc_offset, s->gctags_list.items[s->gctags_list.len-1]);
         assert(item < layout_table.len && layout_table.items[item] == NULL);
         layout_table.items[item] = (void*)reloc_offset;               // store the inverse mapping of `backref_table` (`id` => object)
         record_gvar(s, jl_get_llvm_gv(native_functions, v), ((uintptr_t)DataRef << RELOC_TAG_OFFSET) + reloc_offset);
 
         if (externally_linked(v)) {
-            write_pointer(s->s);
-            uintptr_t *slot = (uintptr_t*)&s->s->buf[reloc_offset];
-            *slot = encode_external_link(v);
+            encode_external_link(s, v);
             continue;
         }
 
@@ -1473,15 +1480,19 @@ static inline uintptr_t get_item_for_reloc(jl_serializer_state *s, uintptr_t bas
         uint64_t *build_id_data = (uint64_t*)jl_array_data(jl_build_ids);
         assert(0 <= link_index && link_index < jl_array_len(link_ids));
         uint64_t build_id = link_id_data[link_index++];
+        // jl_printf(JL_STDOUT, "Relocating external link %d to buildid %ld with offset 0x%lx\n", link_index, build_id, offset);
         size_t i = 0, nids = jl_array_len(jl_build_ids);
         while (i < nids) {
             if (build_id == build_id_data[i])
                 break;
             i++;
         }
+        // jl_printf(JL_STDOUT, "i = %ld\n", i);
         assert(i < nids);
         assert(2*i < jl_linkage_blobs.len);
-        return (uintptr_t)jl_linkage_blobs.items[2*i] + offset;
+        offset -= 0x10;   // TODO: where does this come from?
+        // jl_printf(JL_STDOUT, "Restoring link with offset 0x%lx to location %p\n", offset, (void*)((uintptr_t)jl_linkage_blobs.items[2*i] + offset*sizeof(void*)));
+        return (uintptr_t)jl_linkage_blobs.items[2*i] + offset*sizeof(void*);
     }
     abort();
 }
@@ -1499,6 +1510,7 @@ static void jl_write_skiplist(ios_t *s, char *base, size_t size, arraylist_t *li
         // record pos in relocations list
         // TODO: save space by using delta-compression
         assert(pos < UINT32_MAX);
+        // jl_printf(JL_STDOUT, "  0x%lx %p\n", pos, *pv);
         write_uint32(s, pos);
     }
     write_uint32(s, 0);
@@ -1508,7 +1520,9 @@ static void jl_write_skiplist(ios_t *s, char *base, size_t size, arraylist_t *li
 static void jl_write_relocations(jl_serializer_state *s)
 {
     char *base = &s->s->buf[0];
+    // jl_printf(JL_STDOUT, "GC tags:\n");
     jl_write_skiplist(s->relocs, base, s->s->size, &s->gctags_list);
+    // jl_printf(JL_STDOUT, "Relocs:\n");
     jl_write_skiplist(s->relocs, base, s->s->size, &s->relocs_list);
 }
 
@@ -1525,7 +1539,12 @@ static void jl_read_relocations(jl_serializer_state *s, uint8_t bits)
             break;
         uintptr_t *pv = (uintptr_t*)(base + offset);
         uintptr_t v = *pv;
+        // enum RefTags tag = (enum RefTags)(v >> RELOC_TAG_OFFSET);
         v = get_item_for_reloc(s, base, size, v);
+        // if (tag == ExternalLinkage) {
+            // jl_((jl_value_t*)v);
+            // jl_printf(JL_STDOUT, "Its type is %p, and type-tag %p; is it a module? %d\n", jl_typeof(v), *jl_astaggedvalue(v), jl_is_module(v));
+        // }
         *pv = v | bits;
     }
 }
@@ -1652,6 +1671,14 @@ static void jl_update_all_gvars(jl_serializer_state *s)
     }
 }
 
+static void hexdump(char* mid, int n)
+{
+    jl_printf(JL_STDOUT, "Hexdump at %p over +/- %d:\n", mid, n);
+    char *p;
+    for (p = mid - n; p < mid + n; p++)
+        jl_printf(JL_STDOUT, "%02x ", *p);
+    jl_printf(JL_STDOUT, "\n");
+}
 
 // Reinitialization
 static void jl_finalize_serializer(jl_serializer_state *s, arraylist_t *list)
@@ -1664,6 +1691,9 @@ static void jl_finalize_serializer(jl_serializer_state *s, arraylist_t *list)
         size_t item = (size_t)list->items[i];
         size_t reloc_offset = (size_t)layout_table.items[item];
         assert(reloc_offset != 0);
+        // jl_printf(JL_STDOUT, "Setting reinitialization %ld (offset 0x%lx)\n", (i>>1) + 1, reloc_offset);
+        // hexdump(&s->s->buf[reloc_offset], 16);
+        // jl_(list->items[i]);
         write_uint32(s->s, (uint32_t)reloc_offset);
         write_uint32(s->s, (uint32_t)((uintptr_t)list->items[i + 1]));
     }
@@ -1684,6 +1714,7 @@ static void jl_reinit_item(jl_value_t *v, int how) JL_GC_DISABLED
         }
         case 2: { // rebuild the binding table for module v
             jl_module_t *mod = (jl_module_t*)v;
+            // jl_printf(JL_STDOUT, "Reinit module: type is %p, type-tag is %p\n", jl_typeof(mod), *jl_astaggedvalue(v));
             assert(jl_is_module(mod));
             size_t nbindings = mod->bindings.size;
             htable_new(&mod->bindings, nbindings);
@@ -2081,6 +2112,8 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *worklist) JL_GC
             write_uint32(f, jl_atomic_load_acquire(&jl_world_counter));
             write_uint32(f, jl_typeinf_world);
         }
+        // jl_printf(JL_STDOUT, "Writing link_ids: ");
+        // jl_(link_ids);
         write_uint32(f, jl_array_len(link_ids));
         ios_write(f, (char*)jl_array_data(link_ids), jl_array_len(link_ids)*sizeof(uint64_t));
         jl_finalize_serializer(&s, &reinit_list);
@@ -2234,6 +2267,8 @@ static jl_value_t *jl_restore_system_image_from_stream(ios_t *f) JL_GC_DISABLED
     if (nlinks > 0) {
         link_ids = jl_alloc_array_1d(jl_array_uint64_type, nlinks);
         ios_read(f, (char*)jl_array_data(link_ids), nlinks * sizeof(uint64_t));
+        // jl_printf(JL_STDOUT, "Reloaded link_ids: ");
+        // jl_(link_ids);
     }
     link_index = 0;
     s.s = NULL;
@@ -2249,6 +2284,8 @@ static jl_value_t *jl_restore_system_image_from_stream(ios_t *f) JL_GC_DISABLED
         jl_gc_set_permalloc_region((void*)sysimg_base, (void*)(sysimg_base + sysimg.size));
     }
 
+    if (incremental)
+        jl_printf(JL_STDOUT, "Pointer location of Base: %p; at offset 0x%lx\n", jl_base_module, ((uintptr_t)jl_base_module - (uintptr_t)jl_linkage_blobs.items[0])/sizeof(void*));
     s.s = &sysimg;
     jl_read_relocations(&s, GC_OLD_MARKED); // gctags
     size_t sizeof_tags = ios_pos(&relocs);
