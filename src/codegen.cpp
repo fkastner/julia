@@ -6467,7 +6467,11 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
         }();
 
         std::string wrapName;
-        raw_string_ostream(wrapName) << "jfptr_" << unadorned_name << "_" << globalUnique++;
+        raw_string_ostream wrapNameStream(wrapName);
+        wrapNameStream << "jfptr_" << unadorned_name;
+        if (jl_precompile_toplevel_module)
+            wrapNameStream << "_" << jl_precompile_toplevel_module->build_id;
+        wrapNameStream << "_"  << globalUnique++;
         declarations.functionObject = wrapName;
         (void)gen_invoke_wrapper(lam, jlrettype, returninfo, retarg, declarations.functionObject, M, ctx.emission_context);
     }
