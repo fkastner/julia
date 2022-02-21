@@ -24,19 +24,6 @@ struct OverlayMethodTable <: MethodTableView
 end
 
 """
-    struct CachedMethodTable <: MethodTableView
-
-Overlays another method table view with an additional local fast path cache that
-can respond to repeated, identical queries faster than the original method table.
-"""
-struct CachedMethodTable{T} <: MethodTableView
-    cache::MethodLookupCache
-    table::T
-    CachedMethodTable(cache::MethodLookupCache, table::T) where T = new{T}(cache, table)
-    CachedMethodTable(::Nothing, table::T) where T = new{T}(MethodLookupCache(), table)
-end
-
-"""
     findall(sig::Type, view::MethodTableView; limit=typemax(Int))
 
 Find all methods in the given method table `view` that are applicable to the
@@ -74,17 +61,6 @@ function findall(@nospecialize(sig::Type), table::OverlayMethodTable; limit::Int
     return MethodLookupResult(ms::Vector{Any}, WorldRange(_min_val[], _max_val[]), _ambig[] != 0)
 end
 
-function findall(@nospecialize(sig::Type), table::CachedMethodTable; limit::Int=typemax(Int))
-    if isconcretetype(sig)
-        # we have equivalent cache in this concrete DataType's hash table, so don't bother to cache it here
-        return findall(sig, table.table; limit)
-    end
-    box = Core.Box(sig)
-    return get!(table.cache, sig) do
-        findall(box.contents, table.table; limit)
-    end
-end
-
 """
     findsup(sig::Type, view::MethodTableView)::Union{Tuple{MethodMatch, WorldRange}, Nothing}
 
@@ -108,10 +84,6 @@ function findsup(@nospecialize(sig::Type), table::InternalMethodTable)
     (result.method, WorldRange(min_valid[], max_valid[]))
 end
 
-# This query is not cached
-findsup(@nospecialize(sig::Type), table::CachedMethodTable) = findsup(sig, table.table)
-
 isoverlayed(::MethodTableView)     = error("unsatisfied MethodTableView interface")
 isoverlayed(::InternalMethodTable) = false
 isoverlayed(::OverlayMethodTable)  = true
-isoverlayed(mt::CachedMethodTable) = isoverlayed(mt.table)

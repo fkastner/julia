@@ -259,8 +259,6 @@ It contains many parameters used by the compilation pipeline.
 struct NativeInterpreter <: AbstractInterpreter
     # Cache of inference results for this particular interpreter
     cache::Vector{InferenceResult}
-    # cache of method lookup results
-    method_lookup_cache::MethodLookupCache
     # The world age we're working inside of
     world::UInt
 
@@ -285,7 +283,6 @@ struct NativeInterpreter <: AbstractInterpreter
         return new(
             # Initially empty caches
             Vector{InferenceResult}(),
-            MethodLookupCache(),
 
             # world age counter
             world,
@@ -335,8 +332,6 @@ may_discard_trees(::AbstractInterpreter) = true
 verbose_stmt_info(::AbstractInterpreter) = false
 
 method_table(interp::AbstractInterpreter) = InternalMethodTable(get_world_counter(interp))
-get_method_lookup_cache(ni::NativeInterpreter) = ni.method_lookup_cache
-get_method_lookup_cache(::AbstractInterpreter) = nothing
 
 """
 By default `AbstractInterpreter` implements the following inference bail out logic:
