@@ -1,7 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 using Test, Distributed, Random
-
+#=
 Foo_module = :Foo4b3a94a1a081a8cb
 Foo2_module = :F2oo4b3a94a1a081a8cb
 FooBase_module = :FooBase4b3a94a1a081a8cb
@@ -1278,6 +1278,7 @@ end
     @test any(mi -> mi.specTypes.parameters[2] === Any, mis)
     @test all(mi -> isa(mi.cache, Core.CodeInstance), mis)
 end
+=#
 
 ## Static compilation of external modules
 
@@ -1291,6 +1292,7 @@ function create_expr_cache(pkg::Base.PkgId, input::String, output::String, concr
     depot_path = map(abspath, DEPOT_PATH)
     dl_load_path = map(abspath, Base.DL_LOAD_PATH)
     load_path = map(abspath, Base.load_path())
+    display(load_path)
     path_sep = Sys.iswindows() ? ';' : ':'
     any(path -> path_sep in path, load_path) &&
         error("LOAD_PATH entries cannot contain $(repr(path_sep))")
@@ -1344,16 +1346,29 @@ function compilecache(pkg::Base.PkgId, path::String, cachedir::String, internal_
     mkpath(cachepath)
     tmppath, tmpio = mktemp(cachepath)
     close(tmpio)
-    return create_expr_cache(pkg, path, tmppath, concrete_deps, internal_stderr, internal_stdout)
+    return create_expr_cache(pkg, path, tmppath, concrete_deps, internal_stderr, internal_stdout), tmppath
+end
+
+using LLVM_jll
+
+function ld(f)
+    LLVM_jll.lld() do lld
+        f(`$lld -flavor gnu`)
+    end
+end
+function link_jilib(path, out, args=``)
+    ld() do ld
+        run(`$ld --shared --output=$out --whole-archive $path --no-whole-archive $args`)
+    end
 end
 
 @testset "static compilation" begin
     srcdir   = mktempdir()
     cachedir = mktempdir()
-    cnpath = joinpath(srcdir, "CacheNative.jl")
+    cnpath = joinpath(srcdir, "CacheNative1.jl")
     open(cnpath, "w") do io
         write(io, """
-        module CacheNative
+        module CacheNative1
         const data1 = [1, 2, 3]
         const data2 = [4, 5, 6]
         @noinline uses_data1() = data1[2]
@@ -1361,6 +1376,49 @@ end
         end
         """)
     end
-    p = compilecache(Base.PkgId("CacheNative"), cnpath, cachedir)
+    p, arfile = compilecache(Base.PkgId("CacheNative1"), cnpath, cachedir)
     @test success(p)
+    libfile = arfile * ".so"
+    link_jilib(arfile, libfile)
+    display(libfile)
+    wl1 = ccall(:jl_restore_package_image_from_file, Any, (Ptr{UInt8},), libfile)
+    CN1 = wl1[1]   # the CacheNative1 module
+    f = getfield(CN1, :uses_data1)
+    m = only(methods(f))
+    mi = m.specializations[1]
+    ci = mi.cache
+    @test_broken ci.specptr != C_NULL
+    @test f() == 2
+    # Can we reference this first module from a second?
+    # In particular, test whether we can access `data2` from code.
+    # That's a global variable that wasn't code-referenced in CacheNative1,
+    # and thus wasn't inserted into the .data section of CacheNative1's .o file.
+    # Until this is hooked fully into `using CacheNative1` then it will not be
+    # fully obvious whether the dynamic linker can resolve such references,
+    # because we need to get it by an explicit GlobalRef.
+    push!(LOAD_PATH, srcdir)
+    cnpath = joinpath(srcdir, "CacheNative2.jl")
+    open(cnpath, "w") do io
+        write(io, """
+        module CacheNative2
+        const CacheNative1 = ccall(:jl_restore_package_image_from_file, Any, (Ptr{UInt8},), $(repr(libfile)))[1]::Module
+        @noinline uses_data2() = getfield(CacheNative1, :data2)[2]
+        # @noinline uses_data2() = CacheNative1.data2[2]
+        precompile(uses_data2, ())
+        end
+        """)
+    end
+    p, arfile = compilecache(Base.PkgId("CacheNative2"), cnpath, cachedir)
+    @test success(p)
+    libfile = arfile * ".so"
+    link_jilib(arfile, libfile)
+    display(libfile)
+    println("about to restore ", libfile)
+    wl2 = ccall(:jl_restore_package_image_from_file, Any, (Ptr{UInt8},), libfile)
+    println("done restoring ", libfile)
+    CN2 = wl2[1]   # the CacheNative2 module
+    display(CN2)
+    display(names(CN2, all=true))
+    f = getfield(CN2, :uses_data2)
+    @test f() == 5
 end
