@@ -797,11 +797,16 @@ static uintptr_t _backref_id(jl_serializer_state *s, jl_value_t *v) JL_NOTSAFEPO
                 size_t offset = (uintptr_t)v - left;
                 offset /= sizeof(void*);
                 assert(offset < ((uintptr_t)1 << RELOC_TAG_OFFSET) && "offset to external image too large");
-                jl_printf(JL_STDOUT, "External link %ld against %ld at position 0x%lx to ", jl_array_len(link_ids), build_id_data[i>>1], ios_pos(s->s));
-                jl_(v);
+                // jl_printf(JL_STDOUT, "External link %ld against %ld at position 0x%lx to ", jl_array_len(link_ids), build_id_data[i>>1], ios_pos(s->s));
+                // jl_(v);
                 return ((uintptr_t)ExternalLinkage << RELOC_TAG_OFFSET) + offset;
             }
         }
+        for (i = 0; i < jl_linkage_blobs.len; i+=2) {
+            jl_printf(JL_STDOUT, "i = %d: %p to %p\n", i>>1, jl_linkage_blobs.items[i], jl_linkage_blobs.items[i+1]);
+        }
+        jl_printf(JL_STDOUT, "Object pointer %p for ", v);
+        jl_(v);
         jl_error("no external linkage identified");
     }
     if (idx == HT_NOTFOUND) {
@@ -829,7 +834,7 @@ static void write_pointerfield(jl_serializer_state *s, jl_value_t *fld) JL_NOTSA
 // in `gctags_list`.
 static void write_gctaggedfield(jl_serializer_state *s, uintptr_t ref) JL_NOTSAFEPOINT
 {
-    jl_printf(JL_STDOUT, "gctaggedfield: position %p, value 0x%lx\n", (void*)(uintptr_t)ios_pos(s->s), ref);
+    // jl_printf(JL_STDOUT, "gctaggedfield: position %p, value 0x%lx\n", (void*)(uintptr_t)ios_pos(s->s), ref);
     arraylist_push(&s->gctags_list, (void*)(uintptr_t)ios_pos(s->s));
     arraylist_push(&s->gctags_list, (void*)ref);
     write_pointer(s->s);
@@ -1513,7 +1518,7 @@ static inline uintptr_t get_item_for_reloc(jl_serializer_state *s, uintptr_t bas
         uint64_t *build_id_data = (uint64_t*)jl_array_data(jl_build_ids);
         assert(0 <= link_index && link_index < jl_array_len(link_ids));
         uint64_t build_id = link_id_data[link_index++];
-        jl_printf(JL_STDOUT, "Relocating external link %d to buildid %ld with offset 0x%lx\n", link_index, build_id, offset);
+        // jl_printf(JL_STDOUT, "Relocating external link %d to buildid %ld with offset 0x%lx\n", link_index, build_id, offset);
         size_t i = 0, nids = jl_array_len(jl_build_ids);
         while (i < nids) {
             if (build_id == build_id_data[i])
@@ -1523,7 +1528,7 @@ static inline uintptr_t get_item_for_reloc(jl_serializer_state *s, uintptr_t bas
         // jl_printf(JL_STDOUT, "i = %ld\n", i);
         assert(i < nids);
         assert(2*i < jl_linkage_blobs.len);
-        jl_printf(JL_STDOUT, "Restoring link with offset 0x%lx and base position %p to location %p\n", offset, jl_linkage_blobs.items[2*i], (void*)((uintptr_t)jl_linkage_blobs.items[2*i] + offset*sizeof(void*)));
+        // jl_printf(JL_STDOUT, "Restoring link with offset 0x%lx and base position %p to location %p\n", offset, jl_linkage_blobs.items[2*i], (void*)((uintptr_t)jl_linkage_blobs.items[2*i] + offset*sizeof(void*)));
         return (uintptr_t)jl_linkage_blobs.items[2*i] + offset*sizeof(void*);
     }
     abort();
@@ -1574,8 +1579,8 @@ static void jl_read_relocations(jl_serializer_state *s, uint8_t bits)
         enum RefTags tag = (enum RefTags)(v >> RELOC_TAG_OFFSET);
         v = get_item_for_reloc(s, base, size, v);
         if (tag == ExternalLinkage) {
-            jl_printf(JL_STDOUT, "ExternalLinkage restored at offset 0x%x and absolute location 0x%lx\n", offset, pv);
-            jl_((jl_value_t*)v);
+            // jl_printf(JL_STDOUT, "ExternalLinkage restored at offset 0x%x and absolute location 0x%lx\n", offset, pv);
+            // jl_((jl_value_t*)v);
             // jl_printf(JL_STDOUT, "Its type is %p, and type-tag %p; is it a module? %d\n", jl_typeof(v), *jl_astaggedvalue(v), jl_is_module(v));
         }
         *pv = v | bits;
@@ -1747,7 +1752,7 @@ static void jl_reinit_item(jl_value_t *v, int how) JL_GC_DISABLED
         }
         case 2: { // rebuild the binding table for module v
             jl_module_t *mod = (jl_module_t*)v;
-            jl_printf(JL_STDOUT, "Reinit module at position %p: type is %p, type-tag is %p\n", v, jl_typeof(mod), *jl_astaggedvalue(v));
+            // jl_printf(JL_STDOUT, "Reinit module at position %p: type is %p, type-tag is %p\n", v, jl_typeof(mod), *jl_astaggedvalue(v));
             assert(jl_is_module(mod));
             size_t nbindings = mod->bindings.size;
             htable_new(&mod->bindings, nbindings);
@@ -2145,8 +2150,8 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *worklist) JL_GC
             write_uint32(f, jl_atomic_load_acquire(&jl_world_counter));
             write_uint32(f, jl_typeinf_world);
         }
-        jl_printf(JL_STDOUT, "Writing link_ids: ");
-        jl_(link_ids);
+        // jl_printf(JL_STDOUT, "Writing link_ids: ");
+        // jl_(link_ids);
         write_uint32(f, jl_array_len(link_ids));
         ios_write(f, (char*)jl_array_data(link_ids), jl_array_len(link_ids)*sizeof(uint64_t));
         jl_finalize_serializer(&s, &reinit_list);
@@ -2300,8 +2305,8 @@ static jl_value_t *jl_restore_system_image_from_stream(ios_t *f) JL_GC_DISABLED
     if (nlinks > 0) {
         link_ids = jl_alloc_array_1d(jl_array_uint64_type, nlinks);
         ios_read(f, (char*)jl_array_data(link_ids), nlinks * sizeof(uint64_t));
-        jl_printf(JL_STDOUT, "Reloaded link_ids: ");
-        jl_(link_ids);
+        // jl_printf(JL_STDOUT, "Reloaded link_ids: ");
+        // jl_(link_ids);
     }
     link_index = 0;
     s.s = NULL;
@@ -2373,6 +2378,7 @@ static jl_value_t *jl_restore_system_image_from_stream(ios_t *f) JL_GC_DISABLED
     // Prepare for later external linkage against the sysimg
     arraylist_push(&jl_linkage_blobs, image_base);
     arraylist_push(&jl_linkage_blobs, (char*)image_base + sizeof_sysimg);
+    jl_printf(JL_STDOUT, "%ld blobs to link against\n", jl_linkage_blobs.len >> 1);
     uint64_t buildid = (((uint64_t)read_uint32(f)) << 32) | read_uint32(f);
     if (!jl_build_ids)
         jl_build_ids = jl_alloc_array_1d(jl_array_uint64_type, 0);
